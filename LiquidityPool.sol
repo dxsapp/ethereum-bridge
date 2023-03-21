@@ -3,26 +3,16 @@
 pragma solidity ^0.8.0;
 
 interface IErc20Min {
-    function approve(address spender, uint256 amount) external returns (bool);
+    function approve(address spender, uint256 amount) external;
 
-    function transfer(address to, uint256 amount) external returns (bool);
+    function transfer(address to, uint256 amount) external;
 
-    function transferFrom(
-        address from,
-        address to,
-        uint256 amount
-    ) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external;
 }
 
 contract LiquidityProvider {
-    constructor(address token, uint8 decimals) {
-        require(
-            IErc20Min(token).approve(
-                msg.sender,
-                999_999_999_999_999_999 * 10**decimals
-            ), // quiet large amount
-            "Not approved"
-        );
+    constructor(address token) {
+        IErc20Min(token).approve(msg.sender, type(uint256).max);
     }
 }
 
@@ -33,13 +23,9 @@ contract Treasury {
         _owner = msg.sender;
     }
 
-    function sendTo(
-        address token,
-        address addressTo,
-        uint256 amount
-    ) public {
-        require(_owner == msg.sender);
-        require(IErc20Min(token).transfer(addressTo, amount));
+    function sendTo(address token, address addressTo, uint256 amount) public {
+        require(_owner == msg.sender, "Ownable: caller is not the owner");
+        IErc20Min(token).transfer(addressTo, amount);
     }
 }
 
@@ -96,7 +82,10 @@ contract LiquidityPool {
     mapping(uint8 => Token) private _tokens;
 
     modifier onlyOwner() {
-        require(msg.sender == _ownerAddress, "Caller is not current owner");
+        require(
+            msg.sender == _ownerAddress,
+            "Ownable: caller is not the owner"
+        );
         _;
     }
 
@@ -131,8 +120,11 @@ contract LiquidityPool {
     }
 
     function transferOwnershipComplete(address nextOwner) public {
-        assert(_ownershipTransferStarted > 0);
         require(msg.sender == _nextOwnerAddress, "Caller is not next owner");
+        require(
+            _ownershipTransferStarted > 0,
+            "Ownership transfer is not started"
+        );
         require(
             block.timestamp - _ownershipTransferStarted < 1 minutes,
             "operation timeout"
@@ -146,7 +138,10 @@ contract LiquidityPool {
         emit OwnershipTransferred(oldOwner, _ownerAddress);
     }
 
-    function getAccountInfo(address withdrawAddress, uint8 tokenType)
+    function getAccountInfo(
+        address withdrawAddress,
+        uint8 tokenType
+    )
         public
         view
         returns (
@@ -157,14 +152,14 @@ contract LiquidityPool {
     {
         Account memory account = getAccount(withdrawAddress, tokenType);
 
-//        availableCents = account.availableCents;
-//
-//        if (
-//            block.timestamp - account.withdrawPeriodStarted >=
-//            _withdrawResetTimeout
-//        ) {
-//            availableCents = account.withdrawLimitCents;
-//        }
+        availableCents = account.availableCents;
+
+        if (
+            block.timestamp - account.withdrawPeriodStarted >=
+            _withdrawResetTimeout
+        ) {
+            availableCents = account.withdrawLimitCents;
+        }
 
         return (
             availableCents,
@@ -173,11 +168,10 @@ contract LiquidityPool {
         );
     }
 
-    function getDepositAddress(address withdrawAddress, uint8 tokenType)
-        public
-        view
-        returns (address)
-    {
+    function getDepositAddress(
+        address withdrawAddress,
+        uint8 tokenType
+    ) public view returns (address) {
         return
             address(
                 uint160(
@@ -190,10 +184,7 @@ contract LiquidityPool {
                                 keccak256(
                                     abi.encodePacked(
                                         type(LiquidityProvider).creationCode,
-                                        abi.encode(
-                                            _tokens[tokenType].pointer,
-                                            _tokens[tokenType].decimals
-                                        )
+                                        abi.encode(_tokens[tokenType].pointer)
                                     )
                                 )
                             )
@@ -221,13 +212,11 @@ contract LiquidityPool {
         require(amountCents > 0, "Amount must be > 0");
         require(_tokens[tokenType].decimals > 0, "Unknown");
 
-        bool collected = IErc20Min(_tokens[tokenType].pointer).transferFrom(
+        IErc20Min(_tokens[tokenType].pointer).transferFrom(
             account.depositAddress,
             _treasury,
             centsToToken(amountCents, tokenType)
         );
-
-        require(collected, "Failed to collect tokens");
 
         uint256 balance = account.balanceCents + amountCents;
 
@@ -307,27 +296,26 @@ contract LiquidityPool {
         );
     }
 
-    function getAccount(address withdrawAddress, uint8 tokenType)
-        private
-        view
-        returns (Account storage account)
-    {
+    function getAccount(
+        address withdrawAddress,
+        uint8 tokenType
+    ) private view returns (Account storage account) {
         account = _accounts[
             keccak256(abi.encodePacked(withdrawAddress, tokenType))
         ];
     }
 
-    function createAccount(address withdrawAddress, uint8 tokenType)
-        private
-        returns (Account storage account)
-    {
+    function createAccount(
+        address withdrawAddress,
+        uint8 tokenType
+    ) private returns (Account storage account) {
         account = getAccount(withdrawAddress, tokenType);
 
         require(account.depositAddress == address(0), "Existig account");
 
         LiquidityProvider wallet = new LiquidityProvider{
             salt: getSalt(withdrawAddress, tokenType)
-        }(_tokens[tokenType].pointer, _tokens[tokenType].decimals);
+        }(_tokens[tokenType].pointer);
 
         account.depositAddress = address(wallet);
         account.withdrawPeriodStarted = block.timestamp;
@@ -335,19 +323,17 @@ contract LiquidityPool {
         emit AccountCreated(withdrawAddress, account.depositAddress, tokenType);
     }
 
-    function centsToToken(uint256 cents, uint8 tokenType)
-        private
-        view
-        returns (uint256)
-    {
-        return cents * (10**(_tokens[tokenType].decimals - 2));
+    function centsToToken(
+        uint256 cents,
+        uint8 tokenType
+    ) private view returns (uint256) {
+        return cents * (10 ** (_tokens[tokenType].decimals - 2));
     }
 
-    function getSalt(address withdrawAddress, uint8 tokenType)
-        private
-        pure
-        returns (bytes32)
-    {
+    function getSalt(
+        address withdrawAddress,
+        uint8 tokenType
+    ) private pure returns (bytes32) {
         return keccak256(abi.encodePacked(withdrawAddress, tokenType));
     }
 
