@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: No License (None)
 
-pragma solidity ^0.8.0;
+pragma solidity 0.8.19;
 
 interface IErc20Min {
     function approve(address spender, uint256 amount) external;
@@ -70,13 +70,11 @@ contract LiquidityPool {
     uint256 private _ownershipTransferStarted;
     address private _ownerAddress;
     address private _nextOwnerAddress;
+    bool private _isLocked;
 
-    address private _usdtToken;
-    address private _usdcToken;
-    address private _daiToken;
-    address private _treasury;
-    uint256 private _withdrawResetTimeout;
-    uint256 private _maxWithdrawAmountCents;
+    address private immutable _treasury;
+    uint256 private immutable _withdrawResetTimeout;
+    uint256 private immutable _maxWithdrawAmountCents;
 
     mapping(bytes32 => Account) private _accounts;
     mapping(uint8 => Token) private _tokens;
@@ -120,6 +118,7 @@ contract LiquidityPool {
     }
 
     function transferOwnershipComplete(address nextOwner) public {
+        require(nextOwner != address(0), "Next owner must be specified");
         require(msg.sender == _nextOwnerAddress, "Caller is not next owner");
         require(
             _ownershipTransferStarted > 0,
@@ -134,8 +133,13 @@ contract LiquidityPool {
 
         _ownerAddress = _nextOwnerAddress;
         _nextOwnerAddress = nextOwner;
+        _isLocked = false;
 
         emit OwnershipTransferred(oldOwner, _ownerAddress);
+    }
+
+    function lock() public onlyOwner {
+        _isLocked = true;
     }
 
     function getAccountInfo(
@@ -199,6 +203,7 @@ contract LiquidityPool {
         uint8 tokenType,
         uint256 amountCents
     ) public onlyOwner {
+        require(!_isLocked, "LiquidityPool is locked");
         require(_tokens[tokenType].decimals > 0, "Unknown token");
 
         Account storage account = getAccount(withdrawAddress, tokenType);
@@ -210,7 +215,6 @@ contract LiquidityPool {
         }
 
         require(amountCents > 0, "Amount must be > 0");
-        require(_tokens[tokenType].decimals > 0, "Unknown");
 
         IErc20Min(_tokens[tokenType].pointer).transferFrom(
             account.depositAddress,
@@ -223,7 +227,7 @@ contract LiquidityPool {
         if (balance > account.withdrawLimitCents) {
             if (account.withdrawLimitCents < _maxWithdrawAmountCents) {
                 account.withdrawLimitCents = min(
-                    max(account.withdrawLimitCents, balance),
+                    balance,
                     _maxWithdrawAmountCents
                 );
             }
@@ -247,6 +251,7 @@ contract LiquidityPool {
         uint256 amountCents,
         bytes32 bsvTxId
     ) public onlyOwner {
+        require(!_isLocked, "LiquidityPool is locked");
         require(_tokens[tokenType].decimals > 0, "Unknown token");
 
         Account storage account = getAccount(withdrawAddress, tokenType);
@@ -300,9 +305,7 @@ contract LiquidityPool {
         address withdrawAddress,
         uint8 tokenType
     ) private view returns (Account storage account) {
-        account = _accounts[
-            keccak256(abi.encodePacked(withdrawAddress, tokenType))
-        ];
+        account = _accounts[getSalt(withdrawAddress, tokenType)];
     }
 
     function createAccount(
@@ -327,6 +330,7 @@ contract LiquidityPool {
         uint256 cents,
         uint8 tokenType
     ) private view returns (uint256) {
+        require(_tokens[tokenType].decimals >= 2, "Unknown token");
         return cents * (10 ** (_tokens[tokenType].decimals - 2));
     }
 
